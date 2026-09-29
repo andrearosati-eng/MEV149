@@ -1,0 +1,173 @@
+FUNCTION zfm_help_accert_ritenute_cc.
+*"----------------------------------------------------------------------
+*"*"Interfaccia locale:
+*"  IMPORTING
+*"     REFERENCE(IT_DOC_CC) TYPE  ZFM_T_CREDITI_IMPEGNI OPTIONAL
+*"  EXPORTING
+*"     VALUE(E_ACCERTAMENTO) TYPE  KBLNR
+*"     VALUE(E_POSIZIONE) TYPE  KBLPOS
+*"     VALUE(E_IMPINC) TYPE  KBLWTG
+*"----------------------------------------------------------------------
+
+  DATA: ls_doc        TYPE ty_doc,
+        lr_fdatk      TYPE RANGE OF zfm_crediti_impegni-fdatk,
+        lrs_fdatk     LIKE LINE OF lr_fdatk,
+        lv_data_limit TYPE d,
+        lv_anno_succ  TYPE gjahr,
+        lv_index      TYPE sy-tabix.
+
+  REFRESH: gt_doc_cc,
+           gt_doc_cc_app.
+
+  CLEAR: gv_check,
+         gv_cb,
+         gv_kunnr_cc,
+         gv_name,
+         gv_belnr,
+         gv_blpos,
+         gv_fdatk,
+         gv_wtges,
+         gv_imprev,
+         gv_impinc,
+         gv_blart,
+         gv_kerdat,
+         gv_note,
+         gv_acc,
+         gv_pos,
+         gv_imp.
+
+  gv_check = abap_true.
+  IF gv_check EQ abap_true.
+    CLEAR gv_anno.
+  ENDIF.
+
+  IF it_doc_cc IS NOT INITIAL.
+
+
+    LOOP AT it_doc_cc ASSIGNING FIELD-SYMBOL(<fs_doc_cc>).
+
+      MOVE-CORRESPONDING <fs_doc_cc> TO ls_doc.
+
+      SELECT SINGLE kblk~ktext,                      "#EC CI_SEL_NESTED
+                    zfmcit_help~zz_conto_fin,
+*§---> Start Paganof - 18.02.2026 Mev 122 Direzione Documento
+                      zsfprovve~zzdir_provv
+*§---> End Paganof - 18.02.2026
+        FROM kblp
+        INNER JOIN kblk
+           ON kblk~belnr = kblp~belnr
+        INNER JOIN  zfmcit_help
+           ON zfmcit_help~fipex = kblp~fipex
+          AND  zfmcit_help~gjahr = @<fs_doc_cc>-fdatk(4)
+*§---> Start Paganof - 18.02.2026 Mev 122 Direzione Documento
+   INNER JOIN zsfprovve as zsfprovve
+           ON zsfprovve~numero_documento EQ kblp~belnr
+          AND zsfprovve~numero_posizione EQ kblp~blpos
+*§---> End Paganof - 18.02.2026
+        WHERE   kblp~belnr  = @<fs_doc_cc>-belnr
+          AND   kblp~blpos  = @<fs_doc_cc>-blpos
+*§---> Start Paganof - 18.02.2026 Mev 122 Direzione Documento
+*         INTO ( @ls_doc-text1, @ls_doc-zz_conto_fin ).
+         INTO ( @ls_doc-text1, @ls_doc-zz_conto_fin, @ls_doc-zzdir_provv ).
+*§---> End Paganof - 18.02.2026
+      APPEND ls_doc TO gt_doc_cc.
+
+    ENDLOOP.
+
+    IF gt_doc_cc_app IS INITIAL.
+      gt_doc_cc_app = gt_doc_cc.
+    ELSE.
+      gt_doc_cc = gt_doc_cc_app.
+    ENDIF.
+
+
+    IF gv_anno IS NOT INITIAL.
+      DELETE gt_doc_cc WHERE kerdat+0(4) NE gv_anno.
+    ELSE.
+
+      CLEAR lrs_fdatk.
+      lrs_fdatk-sign   = 'I'.
+      lrs_fdatk-option = 'BT'.
+      CONCATENATE sy-datum(4) '0101' INTO lrs_fdatk-low.
+      CONCATENATE sy-datum(4) '1231' INTO lrs_fdatk-high.
+      CONDENSE: lrs_fdatk-low  NO-GAPS,
+                lrs_fdatk-high NO-GAPS.
+      APPEND lrs_fdatk TO lr_fdatk.
+      CLEAR lrs_fdatk.
+
+      IF gv_check IS NOT INITIAL.
+
+        REFRESH lr_fdatk.
+        lrs_fdatk-sign   = 'I'.
+        lrs_fdatk-option = 'BT'.
+
+        CALL FUNCTION 'RP_CALC_DATE_IN_INTERVAL'
+          EXPORTING
+            date      = sy-datum
+            days      = 0
+            months    = 6
+            signum    = '-'
+            years     = 0
+          IMPORTING
+            calc_date = lv_data_limit.
+
+
+        lrs_fdatk-low    = '19000101'.
+        lrs_fdatk-high   = lv_data_limit.
+        APPEND lrs_fdatk TO lr_fdatk.
+        CLEAR lrs_fdatk.
+
+      ELSE.
+*    lrs_fdatk-low+3(1)  = lrs_fdatk-low+3(1) + 1.
+        lrs_fdatk-low       = '19000101'.
+        CLEAR: lv_anno_succ,
+               lrs_fdatk-high.
+
+        lv_anno_succ = sy-datum(4) + 1.
+        CONCATENATE lv_anno_succ '0101' INTO lrs_fdatk-high.
+*        lrs_fdatk-high+3(1) = lrs_fdatk-high+3(1) + 1.
+        APPEND lrs_fdatk TO lr_fdatk.
+        CLEAR lrs_fdatk.
+      ENDIF.
+
+
+      IF lr_fdatk IS NOT INITIAL.
+        DELETE gt_doc_cc WHERE fdatk NOT IN lr_fdatk.
+      ENDIF.
+
+    ENDIF.
+
+*§---> Start Paganof - 13.11.2025 10:56:42 - Mev 122 Secondo Rilascio ZSFPROVVE DT_FINE FLG_RIT_9998
+    SELECT *
+      FROM zsfprovve
+      INTO TABLE @DATA(lt_sfprovve)
+      FOR ALL ENTRIES IN @gt_doc_cc
+      WHERE tipo_documento   EQ @gt_doc_cc-blart
+        AND numero_documento EQ @gt_doc_cc-belnr
+        AND numero_posizione EQ @gt_doc_cc-blpos
+*        AND flg_rit_9998     EQ 'X'
+        AND dt_fine          GE @sy-datum.
+    IF sy-subrc EQ 0.
+      SORT lt_sfprovve BY tipo_documento numero_documento numero_posizione.
+      LOOP AT gt_doc_cc ASSIGNING FIELD-SYMBOL(<fs_doc_cc_del>).
+        CLEAR lv_index.
+        lv_index = sy-tabix.
+        READ TABLE lt_sfprovve TRANSPORTING NO FIELDS WITH KEY tipo_documento   = <fs_doc_cc_del>-blart
+                                                               numero_documento = <fs_doc_cc_del>-belnr
+                                                               numero_posizione = <fs_doc_cc_del>-blpos BINARY SEARCH.
+        IF sy-subrc EQ 0.
+          DELETE gt_doc_cc INDEX lv_index.
+        ENDIF.
+      ENDLOOP.
+*      gt_doc_cc_app = gt_doc_cc.
+    ENDIF.
+*§---> End Paganof - 13.11.2025 10:57:19
+
+    CALL SCREEN 101 STARTING AT 13 6 ENDING AT 170 30.
+
+    e_accertamento = gv_acc.
+    e_posizione    = gv_pos.
+    e_impinc       = gv_imp.
+
+  ENDIF.
+ENDFUNCTION.

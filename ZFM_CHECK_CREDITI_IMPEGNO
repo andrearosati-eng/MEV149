@@ -1,0 +1,283 @@
+FUNCTION zfm_check_crediti_impegno.
+*"----------------------------------------------------------------------
+*"*"Interfaccia locale:
+*"  IMPORTING
+*"     REFERENCE(I_POPUP) TYPE  CHAR1 DEFAULT ' '
+*"     REFERENCE(I_DTRIF) TYPE  DATUM
+*"     REFERENCE(T_KUNNR) TYPE  FAGL_T_KUNNR
+*"     REFERENCE(T_CDR) TYPE  ZTCDR OPTIONAL
+*"     REFERENCE(GESTIONE) TYPE  ZSF_GSA OPTIONAL
+*"  EXPORTING
+*"     REFERENCE(T_CREDITI) TYPE  ZFM_T_CREDITI_IMPEGNI2
+*"----------------------------------------------------------------------
+
+  DATA: l_kunnr        TYPE kunnr,
+        l_importo_r    TYPE zimp_rev,
+        l_witht        TYPE witht,
+        l_tot_rev      TYPE zimp_rev,
+        l_da_incassare TYPE zimp_rev,
+        l_name1        TYPE name1_gp,
+        l_name2        TYPE name1_gp,
+        l_flg_rit_9998 TYPE c,
+        l_anno         TYPE zsxnumanno,
+        l_annorif      TYPE zsxnumanno.
+  TYPES: BEGIN OF ty_cdr,
+           fipex TYPE fm_fipex,
+           cdr   TYPE zzcod_str_cdr,
+         END OF ty_cdr.
+  DATA: cdr   TYPE TABLE OF      ty_cdr,
+        l_cdr TYPE ty_cdr.
+
+  DATA: i_start_column TYPE  i VALUE 25,
+        i_start_line   TYPE  i VALUE 6,
+        i_end_column   TYPE  i VALUE 120,
+        i_end_line     TYPE  i VALUE 20,
+        i_title        TYPE  lvc_title VALUE 'Crediti non riscossi'.
+  DATA: save_tabix TYPE sy-tabix.                      "[+]fdc_19092023
+* arosati 25.08.2023 ini
+  DATA t_kunnr2 TYPE  fagl_t_kunnr.
+  RANGES: r_fipex FOR kblp-fipex,
+          r_cdr   FOR zfm_edma_cap-cod_str_cdr,
+          r_gsa    FOR fmci-zzsf_gsa.
+*
+  IF  gestione NE space.
+    MOVE 'I' TO r_gsa-sign.
+    MOVE 'EQ' TO r_gsa-option.
+    MOVE gestione TO r_gsa-low.
+    APPEND r_gsa.
+  ENDIF.
+*
+
+  IF t_cdr[]  IS NOT INITIAL.
+    LOOP  AT t_cdr ASSIGNING FIELD-SYMBOL(<cdr>).
+      MOVE 'I' TO r_cdr-sign.
+* arosati 08.02.2024 ini
+      MOVE 'EQ' TO r_cdr-option.
+      MOVE <cdr>-cod_str_cdr TO r_cdr-low.
+*       MOVE 'CP' TO r_cdr-option.
+*       concatenate <cdr>-cod_str_cdr(2) '*' inTO r_cdr-low.
+* arosati 08.02.2024 fine
+      APPEND r_cdr.
+
+    ENDLOOP.
+    SELECT  fipex, cod_str_cdr FROM zfm_edma_cap
+         INTO (@r_fipex-low,@l_cdr-cdr)
+          WHERE gjahr     =  @i_dtrif(4)
+           AND cod_str_cdr IN @r_cdr
+           AND dt_inizio LE  @i_dtrif
+           AND dt_fine   GE  @i_dtrif.                    "#EC CI_SUBRC
+      MOVE 'I' TO r_fipex-sign.
+      MOVE 'EQ' TO r_fipex-option.
+      APPEND r_fipex.
+
+      MOVE r_fipex-low TO l_cdr-fipex.
+      APPEND l_cdr TO cdr.
+    ENDSELECT.
+* arosati 08.02.2024 ini
+    IF sy-subrc NE 0.
+      MOVE 'I' TO r_fipex-sign.
+      MOVE 'EQ' TO r_fipex-option.
+      MOVE '999999' TO  r_fipex-low.
+      APPEND r_fipex.
+    ENDIF.
+* arosati 08.02.2024 fine
+  ENDIF.
+
+* arosati 25.08.2023 fine
+* determinazione anno di riferimento accertamenti
+  l_annorif = i_dtrif(4).
+* ricerca degli accertamenti per ogni cliente ottenuto
+  REFRESH t_crediti.
+  APPEND LINES OF t_kunnr TO t_kunnr2.
+  SORT t_kunnr2." by kunnr.
+  DELETE ADJACENT DUPLICATES FROM t_kunnr2.
+*  LOOP AT t_kunnr ASSIGNING FIELD-SYMBOL(<l_kunnr>). "$ INTO l_kunnr. ZSFM - Migrazione oggetti S4HANA
+  LOOP AT t_kunnr2 ASSIGNING FIELD-SYMBOL(<l_kunnr>). "$ INTO l_kunnr. ZSFM - Migrazione oggetti S4HANA
+    SELECT kblp~kunnr, kblp~belnr, kblp~blpos,       "#EC CI_SEL_NESTED
+           kblp~fdatk, kblp~wtges, kblk~blart,
+           kblk~kerdat, kblp~fipex                      "#EC CI_SEL_DEL
+      APPENDING CORRESPONDING FIELDS OF TABLE @t_crediti
+      FROM kblk
+     INNER JOIN kblp ON kblp~belnr = kblk~belnr         "#EC CI_CONV_OK
+     INNER JOIN zsfprovve ON  zsfprovve~numero_documento = kblp~belnr
+                   AND      zsfprovve~numero_posizione = kblp~blpos
+     WHERE kblk~bltyp = '60'
+       AND kblp~kunnr = @<l_kunnr>
+       AND kblp~erlkz = ''                                        "posizioni non concluse
+       AND kblp~blpkz = ''
+*       AND kblp~geber = 'UNIV_FIN' "arosati 04.04.2024
+       AND fipex IN @r_fipex
+       AND zsfprovve~zzsf_gsa IN @r_gsa. "#EC CI_SUBRC "sblocco di secondo livello
+
+  ENDLOOP.
+* arosati 18.09.2023 ini
+  IF t_cdr[]  IS INITIAL.
+    LOOP AT t_crediti INTO l_crediti.
+      SELECT SINGLE cod_str_cdr                         "#EC CI_NOORDER
+        FROM zfm_edma_cap                            "#EC CI_SEL_NESTED
+       INTO (@l_crediti-cdr)
+        WHERE gjahr    EQ  @i_dtrif(4)
+         AND fipex     EQ  @l_crediti-fipex
+         AND dt_inizio LE  @i_dtrif
+         AND dt_fine   GE  @i_dtrif.
+      IF sy-subrc EQ 0.
+        MODIFY t_crediti FROM l_crediti.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+* arosati 18.09.2023 fine
+* ricerca per ogni accertamento delle reversali
+  LOOP AT t_crediti INTO l_crediti.                "#EC CI_LOOP_INTO_WA
+    save_tabix = sy-tabix.                         "[+]fdc_19092023
+    CLEAR: l_tot_rev, l_da_incassare, l_flg_rit_9998.
+*   Si eliminano le posizioni degli accertamenti
+*   con scadenza in anno superiore all'anno della data di riferimento
+    IF l_crediti-fdatk(4) GT l_annorif.
+      DELETE t_crediti INDEX sy-tabix.
+      CONTINUE.
+    ENDIF.
+    l_anno = l_crediti-kerdat(4).
+*   Controllo che il flag rit_9998 non sia valorizzato
+*$---> Begin - ZSFM - Migrazione oggetti S4HANA
+*   SELECT SINGLE flg_rit_9998
+    SELECT flg_rit_9998                              "#EC CI_SEL_NESTED
+     UP TO 1 ROWS
+     FROM zsfprovve
+      INTO @l_flg_rit_9998
+      WHERE tipo_documento   = @l_crediti-blart
+       AND anno_documento   = @l_anno
+       AND numero_documento = @l_crediti-belnr
+       AND numero_posizione = @l_crediti-blpos
+       AND dt_fine           GE @sy-datum "arosati 21.02.2026
+     ORDER BY PRIMARY KEY.
+    ENDSELECT.                                            "#EC CI_SUBRC
+*$---> End - ZSFM - Migrazione oggetti S4HANA
+    IF l_flg_rit_9998 = 'X'.
+      DELETE t_crediti INDEX sy-tabix.
+      CONTINUE.
+    ENDIF.
+*   se esiste una pre-reversale con codice ritenuta
+*   automatico cancello l'accertamento in esame
+*$---> Begin - ZSFM - Migrazione oggetti S4HANA
+*   SELECT SINGLE witht
+    SELECT witht                                     "#EC CI_SEL_NESTED
+     UP TO 1 ROWS
+     FROM zfm_rev_t
+     INTO @l_witht
+    WHERE n_accert = @l_crediti-belnr
+      AND pos_accert = @l_crediti-blpos
+     ORDER BY PRIMARY KEY.
+    ENDSELECT.
+*$---> End - ZSFM - Migrazione oggetti S4HANA
+    IF sy-subrc EQ 0.
+*$---> Begin - ZSFM - Migrazione oggetti S4HANA
+*     SELECT SINGLE *
+      SELECT SINGLE @abap_true                       "#EC CI_SEL_NESTED
+        INTO @DATA(lv_true)
+        FROM zfm_autpg_logica
+        WHERE witht = @l_witht.                           "#EC CI_SUBRC
+      IF sy-subrc EQ 0."arosati 22.09.2023 altrimenti rimane sporto se va in 4
+*      IF lv_true IS NOT INITIAL.
+*$---> End - ZSFM - Migrazione oggetti S4HANA
+        DELETE t_crediti INDEX sy-tabix.
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+    SELECT importo_r                                 "#EC CI_SEL_NESTED
+      INTO @l_importo_r
+      FROM zfm_rev_t AS revt
+    INNER JOIN zfm_rev_r AS revr ON
+    ( revr~fikrs     = revt~fikrs
+     AND revr~gjahr     = revt~gjahr
+     AND revr~n_pre_rev = revt~n_pre_rev )
+    WHERE revt~n_accert = @l_crediti-belnr
+      AND revt~pos_accert = @l_crediti-blpos
+*      AND revt~zsfstlista = 'LF'
+      AND revr~riga_annullata = ''.
+      ADD l_importo_r TO l_tot_rev.
+    ENDSELECT.                                            "#EC CI_SUBRC
+    SELECT SINGLE name1, name2                       "#EC CI_SEL_NESTED
+      INTO (@l_name1, @l_name2)
+      FROM kna1
+     WHERE kunnr = @l_crediti-kunnr.                      "#EC CI_SUBRC
+    CONCATENATE l_name1 l_name2 INTO l_crediti-name
+      SEPARATED BY space.
+    l_crediti-imprev = l_tot_rev.
+    l_crediti-impinc = l_crediti-wtges - l_tot_rev.
+* arosati 18.09.2023 ini
+    READ TABLE cdr INTO l_cdr WITH KEY fipex = l_crediti-fipex.
+    IF sy-subrc EQ 0.
+      l_crediti-cdr = l_cdr-cdr.
+    ENDIF.
+* arosati 18.09.2023 fine
+    IF l_crediti-impinc LE 0.
+*     DELETE t_crediti INDEX sy-tabix.   "se non ci sono crediti cancello   "[-]fdc_19092023
+      DELETE t_crediti INDEX save_tabix. "se non ci sono crediti cancello   "[+]fdc_19092023
+    ELSE.
+      MODIFY t_crediti FROM l_crediti. "aggiorno i crediti sul cliente
+    ENDIF.
+*   recupero note utente
+    SELECT SINGLE note FROM zfm_crediti_note         "#EC CI_SEL_NESTED
+      INTO @l_crediti-note
+      WHERE kunnr  = @l_crediti-kunnr
+        AND belnr = @l_crediti-belnr
+        AND blpos = @l_crediti-blpos.
+    IF sy-subrc EQ 0.
+      MODIFY t_crediti FROM l_crediti. "aggiorno i crediti sul cliente
+    ENDIF.
+  ENDLOOP.
+
+  CHECK t_crediti[] IS NOT INITIAL.
+  CHECK i_popup = 'X'.
+
+*  TRY.
+*      cl_salv_table=>factory(
+*        IMPORTING
+*          r_salv_table = go_alv
+*        CHANGING
+*          t_table      = t_crediti[] ).
+*
+*    CATCH cx_salv_msg.
+*  ENDTRY.
+*
+*  lr_functions = go_alv->get_functions( ).
+*  lr_functions->set_all( 'X' ).
+*
+*  alv_display = go_alv->get_display_settings( ).
+*  alv_display->set_list_header( i_title ).
+*  alv_columns = go_alv->get_columns( ).
+*  alv_columns->set_optimize( abap_true ).
+*  alv_column = alv_columns->get_column( 'IMPINC' ).
+*  alv_column->set_short_text( 'Imp.da.inc' ).
+*  alv_column->set_medium_text( 'Imp.da incassare' ).
+*  alv_column->set_long_text( 'Importo da incassare' ).
+*
+** Nascondo le colonne da non visualizzare
+*  alv_column = alv_columns->get_column( 'BLART' ).
+*  alv_column->set_visible( abap_false ).
+*  alv_column = alv_columns->get_column( 'KERDAT' ).
+*  alv_column->set_visible( abap_false ).
+*
+*  IF go_alv IS BOUND.
+*    go_alv->set_screen_popup(
+*      start_column = i_start_column
+*      end_column  = i_end_column
+*      start_line  = i_start_line
+*      end_line    = i_end_line ).
+*
+*    go_alv->display( ).
+
+*  ENDIF.
+
+  REFRESH: t_crediti_dyp.
+  t_crediti_dyp[] = t_crediti[].
+  CALL SCREEN 7001 STARTING AT 1 1.
+
+**** INIZIO MODIFICA G.BERSANI 01/08/2017 - WP1NEW ID249 ***
+** devo restituire la nuova tabella dei crediti con l'indicazione
+** dell'accertamento scelto per la compensazione
+*  REFRESH: t_crediti.
+*  t_crediti[] = t_crediti_dyp[].
+**** FINE   MODIFICA G.BERSANI 01/08/2017 - WP1NEW ID249 ***
+
+ENDFUNCTION.
