@@ -7,6 +7,7 @@ FUNCTION zfm_check_crediti_impegno.
 *"     REFERENCE(T_KUNNR) TYPE  FAGL_T_KUNNR
 *"     REFERENCE(T_CDR) TYPE  ZTCDR OPTIONAL
 *"     REFERENCE(GESTIONE) TYPE  ZSF_GSA OPTIONAL
+*"     REFERENCE(F_6MESI) TYPE  CHAR1 DEFAULT ' '
 *"  EXPORTING
 *"     REFERENCE(T_CREDITI) TYPE  ZFM_T_CREDITI_IMPEGNI2
 *"----------------------------------------------------------------------
@@ -34,6 +35,7 @@ FUNCTION zfm_check_crediti_impegno.
         i_end_line     TYPE  i VALUE 20,
         i_title        TYPE  lvc_title VALUE 'Crediti non riscossi'.
   DATA: save_tabix TYPE sy-tabix.                      "[+]fdc_19092023
+  DATA: lv_data_limit TYPE d.                          "MEV149 3.2
 * arosati 25.08.2023 ini
   DATA t_kunnr2 TYPE  fagl_t_kunnr.
   RANGES: r_fipex FOR kblp-fipex,
@@ -110,6 +112,22 @@ FUNCTION zfm_check_crediti_impegno.
        AND zsfprovve~zzsf_gsa IN @r_gsa. "#EC CI_SUBRC "sblocco di secondo livello
 
   ENDLOOP.
+* MEV149 3.2 ini
+* Se richiesto, si escludono gli accertamenti con data scadenza (FDATK)
+* superiore alla data attuale meno sei mesi
+  IF f_6mesi = 'X'.
+    CALL FUNCTION 'RP_CALC_DATE_IN_INTERVAL'
+      EXPORTING
+        date      = sy-datum
+        days      = 0
+        months    = 6
+        signum    = '-'
+        years     = 0
+      IMPORTING
+        calc_date = lv_data_limit.
+    DELETE t_crediti WHERE fdatk > lv_data_limit.
+  ENDIF.
+* MEV149 3.2 fine
 * arosati 18.09.2023 ini
   IF t_cdr[]  IS INITIAL.
     LOOP AT t_crediti INTO l_crediti.
